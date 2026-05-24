@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NNC1 极简自动填表系统 (批量智能打包版) - 金中商务</title>
+    <!-- 引入 Google Fonts 现代字体 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <!-- 引入前端交互脚本 -->
+    <script src="app.js" defer></script>
+</head>
+<body>
+    <!-- 顶部极光微光背景层 -->
+    <div class="aurora-bg">
+        <div class="aurora-glow glow-teal"></div>
+        <div class="aurora-glow glow-violet"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- 头部导航栏 -->
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="logo-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="url(#logoGrad)" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                        <defs>
+                            <linearGradient id="logoGrad" x1="2" y1="2" x2="22" y2="12" gradientUnits="userSpaceOnUse">
+                                <stop stop-color="#0ea5e9"/>
+                                <stop offset="1" stop-color="#8b5cf6"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </span>
+                <span class="logo-text">金中商务 / <span>NNC1 Batch Filler</span></span>
+            </div>
+            <div class="header-badge">批量自描述归档版 v1.1</div>
+        </header>
+
+        <!-- 主内容区域：Bento Grid 排版 -->
+        <main class="main-content">
+            <!-- 左侧：多模态输入与进度展示 -->
+            <section class="left-panel">
+                <div class="card glass-card upload-card">
+                    <div class="card-header">
+                        <span class="step-num">01</span>
+                        <h2>上传董事身份证照片 (正反面)</h2>
+                    </div>
+                    <p class="card-desc">支持一次性拖入或选择**多张身份证照片（正面、反面均可）**。系统将全自动识别，并为您归口分类。</p>
+                    
+                    <!-- 双通道拖拽上传区域 -->
+                    <div class="drop-zones-container">
+                        <!-- 个人信息面（正面）区 -->
+                        <div class="drop-zone zone-front" id="dropZoneFront">
+                            <input type="file" id="fileInputFront" accept="image/*" class="file-input-hidden" multiple>
+                            <div class="drop-zone-content">
+                                <span class="upload-icon">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M18 21a6 6 0 0 0-12 0"/>
+                                        <circle cx="12" cy="10" r="4"/>
+                                        <rect width="20" height="14" x="2" y="5" rx="2"/>
+                                    </svg>
+                                </span>
+                                <p class="main-prompt">拖入/上传 <span>正面照</span></p>
+                                <p class="sub-prompt">个人信息面</p>
+                            </div>
+                        </div>
+
+                        <!-- 国徽/有效期面（反面）区 -->
+                        <div class="drop-zone zone-back" id="dropZoneBack">
+                            <input type="file" id="fileInputBack" accept="image/*" class="file-input-hidden" multiple>
+                            <div class="drop-zone-content">
+                                <span class="upload-icon">
+                                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <rect width="20" height="14" x="2" y="5" rx="2"/>
+                                        <path d="M12 9v6M9 12h6M6 15h12M6 9h12"/>
+                                    </svg>
+                                </span>
+                                <p class="main-prompt">拖入/上传 <span>反面照</span></p>
+                                <p class="sub-prompt">国徽/有效期面</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 上传解析队列展示区 (变更为预配对与合并卡片) -->
+                    <div class="upload-queue-section hidden" id="uploadQueueSection">
+                        <div class="queue-header-row">
+                            <h3>📋 证件照预配对与合并队列 (<span id="queueCount">0</span> 组)</h3>
+                            <div class="queue-controls-wrapper">
+                                <label class="auto-ocr-switch-wrapper" title="开启后，完美配对的证件照组将直接在后台发起OCR并自动消失；关闭后需手动点击批量转换">
+                                    <input type="checkbox" id="toggleAutoOcr" checked>
+                                    <span class="switch-label-text">⚡ 配对即时自动转换</span>
+                                </label>
+                                <button type="button" class="btn-ocr-batch" id="btnStartOcrBatch" disabled>
+                                    <span class="btn-ocr-text">⚡ 开始批量 OCR 转换 (<span id="readyCount">0</span> 组就绪)</span>
+                                    <span class="btn-ocr-loading hidden">
+                                        <svg class="btn-spinner" viewBox="0 0 24 24">
+                                            <circle class="path" cx="12" cy="12" r="10" fill="none" stroke-width="3"></circle>
+                                        </svg>
+                                        批量转换中...
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="queue-list" id="queueList">
+                            <!-- 动态插入的预配对董事卡片行 -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 消息通知栏 -->
+                <div class="notification-bar glass-card hidden" id="notificationBar">
+                    <span class="notif-icon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="16" x2="12" y2="12"></line>
+                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                        </svg>
+                    </span>
+                    <span class="notif-text" id="notificationText">消息内容</span>
+                </div>
+            </section>
+
+            <!-- 右侧：批量手风琴折叠卡片与数据表单区 -->
+            <section class="right-panel">
+                <div class="card glass-card form-card">
+                    <div class="card-header">
+                        <span class="step-num">02</span>
+                        <h2>数据核准与批量绑定</h2>
+                    </div>
+                    
+                    <div class="alert-box info">
+                        <div class="alert-icon">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                                <line x1="12" y1="9" x2="12" y2="13"></line>
+                                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                            </svg>
+                        </div>
+                        <p class="alert-content">上传身份证正面照后，系统会自动创建董事卡片。请核对拼音及身份要素，并在此为每位董事绑定公司名称。</p>
+                    </div>
+
+                    <!-- 动态董事手风琴容器 -->
+                    <div class="directors-accordion-container" id="directorsContainer">
+                        <div class="empty-state" id="emptyState">
+                            <div class="empty-icon">📂</div>
+                            <p>暂无董事数据，请在左侧上传身份证，或点击下方手动添加卡片。</p>
+                        </div>
+                        <!-- 动态生成的手风琴卡片将插入此处 -->
+                    </div>
+
+                    <!-- 底部一键打包与操作台 -->
+                    <div class="control-actions">
+                        <button type="button" class="btn btn-secondary" id="btnAddDirector">
+                            ➕ 手动添加董事卡片
+                        </button>
+                        <button type="button" class="btn btn-primary" id="btnSubmitBatch" disabled>
+                            <span class="btn-text">一键批量生成并下载 ZIP 压缩包</span>
+                            <span class="btn-loading hidden">
+                                <svg class="btn-spinner" viewBox="0 0 24 24">
+                                    <circle class="path" cx="12" cy="12" r="10" fill="none" stroke-width="3"></circle>
+                                </svg>
+                                正在打包归档...
+                            </span>
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 页脚 -->
+        <footer class="app-footer">
+            <p>© 2026 金中（香港）商务集团有限公司 · 批量自描述法团成立打包套件</p>
+        </footer>
+    </div>
+</body>
+</html>
