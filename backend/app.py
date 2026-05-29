@@ -55,6 +55,8 @@ async def api_ocr(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail=res.get("error"))
             
         return res
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR 引擎内部发生异常: {str(e)}")
 
