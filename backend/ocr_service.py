@@ -1,58 +1,8 @@
 # nnc1_web/backend/ocr_service.py
-import urllib.request
-import urllib.parse
-import urllib.error
 import time
 import json
 import base64
-import ssl
-import io
-from PIL import Image, ImageOps
-
-def compress_image_if_needed(image_bytes: bytes, max_size_kb: int = 1500, max_dim: int = 2000) -> bytes:
-    """
-    如果图片大小超过 max_size_kb 或分辨率长边超过 max_dim，进行自动等比例缩小与 JPEG 压缩，
-    降低上传带宽消耗，防范阿里云端由于图片太大处理超时或内存溢出导致 500 报错。
-    """
-    try:
-        # 如果文件大小小于限制，且长宽也都在合理范围内，则跳过压缩以保持最高精度
-        if len(image_bytes) < max_size_kb * 1024:
-            with Image.open(io.BytesIO(image_bytes)) as img:
-                w, h = img.size
-                if w <= max_dim and h <= max_dim:
-                    return image_bytes
-                    
-        with Image.open(io.BytesIO(image_bytes)) as img:
-            # 根据 EXIF 旋转信息把图片转正
-            try:
-                img = ImageOps.exif_transpose(img)
-            except:
-                pass
-                
-            w, h = img.size
-            if w > max_dim or h > max_dim:
-                if w > h:
-                    new_w = max_dim
-                    new_h = int(h * (max_dim / w))
-                else:
-                    new_h = max_dim
-                    new_w = int(w * (max_dim / h))
-                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                
-            # 压缩为 JPEG 字节流
-            out_io = io.BytesIO()
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            img.save(out_io, format="JPEG", quality=85)
-            compressed_bytes = out_io.getvalue()
-            
-            # 只有压缩后确实变小了才返回压缩包，否则返回原图
-            if len(compressed_bytes) < len(image_bytes):
-                return compressed_bytes
-            return image_bytes
-    except Exception as e:
-        print(f"[Warning] Image compression failed, fallback to original: {e}")
-        return image_bytes
+import requests
 
 def ocr_card_from_bytes(image_bytes: bytes) -> dict:
     """
@@ -72,32 +22,40 @@ def ocr_card_from_bytes(image_bytes: bytes) -> dict:
         url = "https://multidcard.market.alicloudapi.com/ocrservice/mixedMultiIdcard"
         appcode = "de78c45beec34f6e8ea14140c48634d6"
         
-        payload = json.dumps({"img": img_base64})
+        headers = {
+            "Authorization": f"APPCODE {appcode}",
+            "Content-Type": "application/json; charset=UTF-8",
+            "Accept": "application/json"
+        }
         
-        req = urllib.request.Request(url, data=payload.encode("utf-8"), method="POST")
-        req.add_header("Authorization", f"APPCODE {appcode}")
-        req.add_header("Content-Type", "application/json; charset=UTF-8")
-        req.add_header("Accept", "application/json")
+        payload = {"img": img_base64}
         
-        # 忽略 SSL 校验，彻底防止 TLS 握手故障
-        ctx = ssl._create_unverified_context()
-        
-        # 3. 发送请求 (包含指数退避自动重试机制，抵抗 QPS 峰值限流)
-        content = ""
+        # 3. 发送请求 (包含指数退避自动重试机制，同时针对限流和网络超时进行重试)
         max_retries = 3
+        response = None
         for attempt in range(max_retries):
             try:
-                with urllib.request.urlopen(req, context=ctx, timeout=25) as response:
-                    content = response.read().decode("utf-8")
-                break  # 成功获取结果，跳出重试循环
-            except urllib.error.HTTPError as he:
+                # 使用 requests，设置 connect=15s, read/write=60s 的超时阈值，比 urllib 更稳健地发送大文件
+                response = requests.post(url, json=payload, headers=headers, timeout=(15, 60))
+                
                 # 针对 430 (Aliyun 限流) 或 429 (标准限流) 进行自动延迟重试
-                if he.code in [430, 429] and attempt < max_retries - 1:
+                if response.status_code in [429, 430] and attempt < max_retries - 1:
                     time.sleep(1.0 * (attempt + 1))  # 依次等待 1s, 2s
                     continue
-                raise he
+                    
+                response.raise_for_status()
+                break  # 成功获取结果，跳出重试循环
+            except requests.exceptions.RequestException as re:
+                # 针对网络超时、写超时或连接断开进行自动重试
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                raise re
+                
+        if response is None:
+            raise Exception("未收到响应")
             
-        data = json.loads(content)
+        data = response.json()
         extracted_results = []
         
         # 4. 解析结果要素
@@ -116,37 +74,25 @@ def ocr_card_from_bytes(image_bytes: bytes) -> dict:
         if extracted_results:
             return {"success": True, "data": extracted_results}
         else:
-            # 回退机制，返回原始数据或给出提示
             return {"success": True, "data": [{"card_type": "未知", "elements": data}]}
             
     except Exception as e:
-        # 捕获并解析详细错误流（如阿里云网关报错头与错误内容）
-        err_details = ""
         err_msg = str(e)
+        err_details = ""
         
-        # 提取阿里云 API 网关 headers 错误（如 A403QD - 欠费/频次超限，A401AC - AppCode 不存在）
-        if hasattr(e, "headers") and e.headers:
-            ca_err_msg = e.headers.get("X-Ca-Error-Message") or e.headers.get("x-ca-error-message")
-            ca_err_code = e.headers.get("X-Ca-Error-Code") or e.headers.get("x-ca-error-code")
+        # 提取详细报错（包含阿里云 API 网关 headers 错误）
+        if isinstance(e, requests.exceptions.HTTPError) and e.response is not None:
+            headers = e.response.headers
+            ca_err_msg = headers.get("X-Ca-Error-Message") or headers.get("x-ca-error-message")
+            ca_err_code = headers.get("X-Ca-Error-Code") or headers.get("x-ca-error-code")
             if ca_err_msg or ca_err_code:
                 err_msg = f"{err_msg} (Aliyun Gateway: {ca_err_code or ''} - {ca_err_msg or ''})"
                 
-        if hasattr(e, "read"):
             try:
-                err_bytes = e.read()
-                # 尝试用 UTF-8 解码，如果失败试用 GBK 解码（阿里云某些报错使用 GBK）
-                try:
-                    err_details = err_bytes.decode("utf-8")
-                except:
-                    err_details = err_bytes.decode("gbk", errors="ignore")
-                    
-                # 尝试解析 JSON 错误体 (获取 errorCode 和 errorMsg)
-                try:
-                    body_json = json.loads(err_details)
-                    if "errorMsg" in body_json:
-                        err_msg = f"{err_msg} [API Detail: {body_json.get('errorMsg')}]"
-                except:
-                    pass
+                err_details = e.response.text
+                body_json = e.response.json()
+                if "errorMsg" in body_json:
+                    err_msg = f"{err_msg} [API Detail: {body_json.get('errorMsg')}]"
             except:
                 pass
         return {"success": False, "error": f"OCR API 请求失败: {err_msg}", "details": err_details}
