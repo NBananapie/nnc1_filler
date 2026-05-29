@@ -65,9 +65,6 @@ def ocr_card_from_bytes(image_bytes: bytes) -> dict:
         dict: 包含识别出的卡证类型和要素详情，若失败则抛出 Exception 或返回带 error 的 dict。
     """
     try:
-        # 0. 自动压缩大图以提升请求速度并防范阿里云超时/500异常
-        image_bytes = compress_image_if_needed(image_bytes)
-        
         # 1. 转换为 Base64
         img_base64 = base64.b64encode(image_bytes).decode("utf-8")
         

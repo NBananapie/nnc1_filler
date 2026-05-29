@@ -449,56 +449,30 @@ document.addEventListener("DOMContentLoaded", () => {
         showNotification("🔄 反面证件照位置互换配对成功！", "success");
     }
 
-    // 模拟单卡槽的平滑加载动效
+    // 瞬间加载就绪
     function simulateSlotUploadProgress(group, side) {
-        let currentProgress = 0;
+        if (side === "front") {
+            group.frontProgress = 100;
+            group.frontStatus = "ready";
+        } else {
+            group.backProgress = 100;
+            group.backStatus = "ready";
+        }
         
-        const interval = setInterval(() => {
-            currentProgress += Math.floor(Math.random() * 18 + 6);
-            if (currentProgress >= 100) {
-                currentProgress = 100;
-                clearInterval(interval);
-                
-                if (side === "front") {
-                    group.frontProgress = 100;
-                    group.frontStatus = "ready";
-                } else {
-                    group.backProgress = 100;
-                    group.backStatus = "ready";
-                }
-                
-                const isFrontFinished = group.frontFile ? group.frontProgress === 100 : true;
-                const isBackFinished = group.backFile ? group.backProgress === 100 : true;
-                
-                if (isFrontFinished && isBackFinished) {
-                    group.status = "ready";
-                }
-                
-                renderPairGroups();
-                updateQueueCountsAndUI();
+        const isFrontFinished = group.frontFile ? group.frontProgress === 100 : true;
+        const isBackFinished = group.backFile ? group.backProgress === 100 : true;
+        
+        if (isFrontFinished && isBackFinished) {
+            group.status = "ready";
+        }
+        
+        renderPairGroups();
+        updateQueueCountsAndUI();
 
-                if (toggleAutoOcr && toggleAutoOcr.checked && group.frontFile && group.backFile && group.status === "ready") {
-                    // ⚡ 完美配对成功，且自动转换开关开启，自动开启 OCR 与消失机制
-                    runOcrForPairGroup(group);
-                }
-            } else {
-                if (side === "front") {
-                    group.frontProgress = currentProgress;
-                } else {
-                    group.backProgress = currentProgress;
-                }
-                
-                const bar = document.getElementById(`bar_${group.id}`);
-                const statusSpan = document.getElementById(`status_${group.id}`);
-                if (bar && statusSpan) {
-                    const frontP = group.frontFile ? group.frontProgress : 100;
-                    const backP = group.backFile ? group.backProgress : 100;
-                    const avg = Math.floor((frontP + backP) / 2);
-                    bar.style.width = `${avg}%`;
-                    statusSpan.textContent = `正在加载 ${avg}%...`;
-                }
-            }
-        }, 30);
+        if (toggleAutoOcr && toggleAutoOcr.checked && group.frontFile && group.backFile && group.status === "ready") {
+            // ⚡ 完美配对成功，且自动转换开关开启，自动开启 OCR 与消失机制
+            runOcrForPairGroup(group);
+        }
     }
 
     // 更新全局计数和转换按钮的可点击状态
@@ -568,7 +542,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
 
-    // 独立且极致的卡片组 OCR 核心执行函数 (反面直接带入不 OCR，速度翻倍)
+    // 独立且极致的卡片组 OCR 核心执行函数 (使用 XMLHttpRequest 追踪真实网络上传进度)
     async function runOcrForPairGroup(group) {
         const bar = document.getElementById(`bar_${group.id}`);
         const statusSpan = document.getElementById(`status_${group.id}`);
@@ -577,8 +551,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (bar && statusSpan) {
             group.status = "converting";
             bar.className = "queue-item-progress-bar converting";
-            bar.style.width = "100%";
-            statusSpan.textContent = "识别中...";
+            bar.style.width = "0%";
+            statusSpan.textContent = "正在上传 0%...";
             statusSpan.className = "queue-item-status converting";
         }
         if (cardEl) {
@@ -602,18 +576,78 @@ document.addEventListener("DOMContentLoaded", () => {
         const formData = new FormData();
         formData.append("file", group.frontFile);
         
-        try {
-            const response = await fetch("/api/ocr", {
-                method: "POST",
-                body: formData
+        const performOcrRequest = () => {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST", "/api/ocr");
+                
+                // 监听真实上传进度，0% - 100% 映射到进度条的 0% - 80%
+                xhr.upload.addEventListener("progress", (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = Math.round((e.loaded / e.total) * 100);
+                        const mappedPercent = Math.round(percentComplete * 0.8);
+                        if (bar && statusSpan && group.status === "converting") {
+                            bar.style.width = `${mappedPercent}%`;
+                            statusSpan.textContent = `上传中 ${percentComplete}%...`;
+                        }
+                    }
+                });
+                
+                let slowCrawlInterval = null;
+                // 上传完毕后切换为“识别中...”，并在 80% - 95% 之间缓慢攀升以提供反馈
+                xhr.upload.addEventListener("load", () => {
+                    if (bar && statusSpan && group.status === "converting") {
+                        bar.style.width = "80%";
+                        statusSpan.textContent = "识别中...";
+                        
+                        let currentWidth = 80;
+                        slowCrawlInterval = setInterval(() => {
+                            if (currentWidth < 95) {
+                                currentWidth += 1;
+                                bar.style.width = `${currentWidth}%`;
+                            } else {
+                                clearInterval(slowCrawlInterval);
+                            }
+                        }, 400);
+                    }
+                });
+                
+                xhr.onload = () => {
+                    if (slowCrawlInterval) clearInterval(slowCrawlInterval);
+                    
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const resData = JSON.parse(xhr.responseText);
+                            resolve(resData);
+                        } catch (err) {
+                            reject(new Error("解析服务器响应失败"));
+                        }
+                    } else {
+                        try {
+                            const errData = JSON.parse(xhr.responseText);
+                            reject(new Error(errData.detail || `请求失败 (${xhr.status})`));
+                        } catch (e) {
+                            reject(new Error(`服务响应异常 (${xhr.status})`));
+                        }
+                    }
+                };
+                
+                xhr.onerror = () => {
+                    if (slowCrawlInterval) clearInterval(slowCrawlInterval);
+                    reject(new Error("网络连接失败"));
+                };
+                
+                xhr.ontimeout = () => {
+                    if (slowCrawlInterval) clearInterval(slowCrawlInterval);
+                    reject(new Error("请求超时"));
+                };
+                
+                xhr.send(formData);
             });
-            
-            if (!response.ok) {
-                const errData = await response.json();
-                throw new Error(errData.detail || "服务响应异常");
-            }
-            
-            const resData = await response.json();
+        };
+        
+        try {
+            const resData = await performOcrRequest();
             
             if (resData.success && resData.data && resData.data.length > 0) {
                 const elements = resData.data[0].elements;
@@ -634,6 +668,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 group.status = "success";
                 if (bar && statusSpan) {
                     bar.className = "queue-item-progress-bar success";
+                    bar.style.width = "100%";
                     statusSpan.textContent = "解析成功";
                     statusSpan.className = "queue-item-status success";
                 }
@@ -659,6 +694,7 @@ document.addEventListener("DOMContentLoaded", () => {
             
             if (bar && statusSpan) {
                 bar.className = "queue-item-progress-bar failed";
+                bar.style.width = "100%";
                 statusSpan.textContent = `失败: ${error.message}`;
                 statusSpan.className = "queue-item-status failed";
             }
@@ -1171,6 +1207,95 @@ document.addEventListener("DOMContentLoaded", () => {
             btnSubmitBatch.disabled = false;
             btnText.classList.remove("hidden");
             btnLoading.classList.add("hidden");
+        }
+    });
+
+    // ==========================================
+    // 11. 全局图片预览灯箱交互逻辑 (Lightbox Modal)
+    // ==========================================
+    const imagePreviewModal = document.getElementById("imagePreviewModal");
+    const modalPreviewImg = document.getElementById("modalPreviewImg");
+    const modalImageCaption = document.getElementById("modalImageCaption");
+    const modalCloseBtn = document.getElementById("modalCloseBtn");
+    
+    // 打开预览灯箱
+    function openImagePreview(src, captionText) {
+        if (!imagePreviewModal || !modalPreviewImg || !modalImageCaption) return;
+        modalPreviewImg.src = src;
+        modalImageCaption.textContent = captionText || "证件照预览";
+        imagePreviewModal.classList.remove("hidden");
+    }
+    
+    // 关闭预览灯箱
+    function closeImagePreview() {
+        if (!imagePreviewModal) return;
+        imagePreviewModal.classList.add("hidden");
+        if (modalPreviewImg) {
+            // 延迟清空 src 以免淡出时闪烁
+            setTimeout(() => {
+                if (imagePreviewModal.classList.contains("hidden")) {
+                    modalPreviewImg.src = "";
+                }
+            }, 300);
+        }
+    }
+    
+    // 点击关闭按钮关闭
+    if (modalCloseBtn) {
+        modalCloseBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            closeImagePreview();
+        });
+    }
+    
+    // 点击背景空白处关闭
+    if (imagePreviewModal) {
+        imagePreviewModal.addEventListener("click", (e) => {
+            if (e.target === imagePreviewModal) {
+                closeImagePreview();
+            }
+        });
+    }
+    
+    // 监听键盘 Esc 键关闭
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" || e.key === "Esc") {
+            closeImagePreview();
+        }
+    });
+    
+    // 使用事件代理拦截所有预览图片的点击
+    document.addEventListener("click", (e) => {
+        // 1. 左侧预配对队列里的图片点击
+        const queueImg = e.target.closest(".preview-slot.has-file img");
+        if (queueImg) {
+            e.stopPropagation();
+            const cardEl = queueImg.closest(".pair-group-card");
+            const titleEl = cardEl ? cardEl.querySelector(".pair-title") : null;
+            let groupName = "证件照预览";
+            if (titleEl) {
+                groupName = titleEl.innerText.replace(/\s+/g, " ").trim();
+            }
+            const isFront = queueImg.closest(".preview-slot").classList.contains("slot-front");
+            const sideText = isFront ? "正面照 (信息面)" : "反面照 (国徽面)";
+            openImagePreview(queueImg.src, `${groupName} - ${sideText}`);
+            return;
+        }
+        
+        // 2. 右侧已生成董事折叠卡片里的图片点击
+        const accordionImg = e.target.closest(".id-slot-preview img");
+        if (accordionImg) {
+            e.stopPropagation();
+            const accordionItem = accordionImg.closest(".accordion-item");
+            const nameEl = accordionItem ? accordionItem.querySelector(".accordion-name-text") : null;
+            let directorName = "董事证件照";
+            if (nameEl) {
+                directorName = nameEl.textContent.trim();
+            }
+            const isFront = accordionImg.closest(".id-slot").classList.contains("slot-front");
+            const sideText = isFront ? "正面照" : "反面照";
+            openImagePreview(accordionImg.src, `${directorName} - ${sideText}`);
+            return;
         }
     });
 });
